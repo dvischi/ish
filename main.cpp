@@ -1,3 +1,28 @@
+/*
+* ISHProfiler -- an image-based computational workflow for accurate detection of molecular signals
+* <https://github.com/dvischi/ish>
+*
+* Copyright (c) 2017 Dario Vischi
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+* IN THE SOFTWARE.
+*/
+
 
 #include <fstream>
 #include <iostream>
@@ -10,13 +35,11 @@
 // Matlab
 #include "mat.h"
 
-// LibSVM
-#include "svm.h"
-
 // OpenCV
 #include <opencv2\core\core.hpp>
 #include <opencv2\imgproc\imgproc.hpp>
 #include <opencv2\highgui\highgui.hpp>
+#include <opencv2\ml\ml.hpp>
 
 
 typedef std::vector<std::string> CSVHeader;
@@ -29,8 +52,10 @@ bool readCsvFile(std::string, CSVHeader&, CSVData&);
 
 
 // Utility Functions
+//#include <algorithm>
 #include <functional>
 #include <cctype>
+//#include <locale>
 static inline std::string &ltrim(std::string &s) {
 	s.erase(s.begin(), std::find_if(s.begin(), s.end(),
 		std::not1(std::ptr_fun<int, int>(std::isspace))));
@@ -51,51 +76,63 @@ static inline std::string &trim(std::string &s) {
 struct  PointSignal {
 	int x;
 	int y;
-	cv::Vec3f rgb;
+	cv::Scalar rgb;
 };
 
-std::vector<cv::Vec3f> colors = {
-	cv::Vec3f(1, 0, 0),
-	cv::Vec3f(0, 0, 0),
-	cv::Vec3f(0.9, 0.9, 0.9),
-	cv::Vec3f(0, 0, 1),
-	cv::Vec3f(0.2510, 0.8784, 0.8157)
+
+struct  PointSignalPositions {
+	std::vector<PointSignal> cep;
+	std::vector<PointSignal> gene;
+};
+
+
+std::vector<cv::Scalar> colors = {
+	cv::Scalar(255, 0, 0), // (1, 0, 0)
+	cv::Scalar(0, 0, 0), // (0, 0, 0)
+	cv::Scalar(230, 230, 230), // (0.9f, 0.9f, 0.9f)
+	cv::Scalar(0, 0, 255), // (0, 0, 1)
+	cv::Scalar(64, 224, 208) // (0.2510f, 0.8784f, 0.8157f)
 };
 
 void classifyPoints(
-	cv::Mat image, std::vector<cv::Vec3f> circles, int r, struct svm_model *svmModel,
-	std::vector<PointSignal> cep, std::vector<PointSignal> gene
+	cv::Mat& image, std::vector<cv::Vec3f> circles, int r, cv::SVM& svmModel,
+	std::vector<PointSignal>& cep, std::vector<PointSignal>& gene
 ) {
-	for (std::vector<cv::Vec3f>::iterator it = circles.begin(); it != circles.begin() + 1; ++it) {
+	for (std::vector<cv::Vec3f>::iterator it = circles.begin(); it != circles.end(); ++it) {
 		int x, y;
 		x = cvFloor((*it)[0]);
 		y = cvFloor((*it)[1]);
-		cv::Mat xdata;
-
+		cv::Mat roi;
+		
+		cv::Rect rect;
 		try {
-			xdata = image(cv::Range(x - r, y - r), cv::Range(x + r, y + r));
+			rect = cv::Rect(x - r, y - r, 2 * r + 1, 2 * r + 1);
+			roi = image(rect).clone();
 		}
 		catch (const std::exception&) {
-			// xdata was located outside the image
+			std::cout << "Warning: Index out of bounds: " << rect << std::endl;
 			continue;
 		}
 		
-		// convert image data from byte [0, 255] to float [0.0, 1.0]
-		image.convertTo(image, CV_32FC1);
+		roi = roi.reshape(1, 1);
 
-		int I = svm_predict(svmModel, (svm_node*) &xdata);
+		// convert xdata from byte [0, 255] to float [0.0, 1.0]
+		roi.convertTo(roi, CV_32FC1);
+		roi /= 255;
+
+		int I = static_cast<int>( svmModel.predict(roi, true) );
 
 		switch (I)
 		{
 		case 1:
-			cep.push_back({ x, y, colors[I] });
+			cep.push_back({ x, y, colors[I-1] });
 			break;
 		case 2:
-			gene.push_back({ x, y, colors[I] });
+			gene.push_back({ x, y, colors[I-1] });
 			break;
-		case 3:
-			cep.push_back({ x, y, colors[I] });
-			gene.push_back({ x, y, colors[I] });
+		case 5:
+			cep.push_back({ x, y, colors[I-1] });
+			gene.push_back({ x, y, colors[I-1] });
 			break;
 		default:
 			// do nothing
@@ -140,31 +177,18 @@ int main() {
 		files.push_back(rtrim(data[row_idx][files_idx]));
 	}
 
-	/*
-	for (size_t col_idx = 0; col_idx < labels.size(); col_idx++) {
-		std::cout << labels[col_idx] << ", ";
-	}
-	*/
-
-	struct svm_model *svmModel;
-
-	svmModel = svm_load_model(std::string(svmPath + "model.svm").c_str());
-	if (svmModel == nullptr) {
-		std::cerr << "Could not read model from MAT file!" << std::endl;
-		exit(1);
-	}
-
-	//std::cout << files[0] << ", ";
-	//std::cout << svmModel->rho[0] << svmModel->rho[1] << ", ";
-
-	//std::cin.ignore();
+	cv::SVM svmModel;
+	svmModel.load(std::string(svmPath + "svm.xml").c_str(), "ish_svm");
 
 	int r = 3; // point signal radius
 	int r_min = r - 2;
 	int r_max = r + 4;
+	cv::Mat gRatio(files.size(), 1, CV_32FC1);
+	std::vector<PointSignalPositions> pos(files.size());
 
 	//for (std::vector<std::string>::iterator it = files.begin(); it != files.end(); ++it) {
 	for (std::vector<std::string>::iterator it = files.begin(); it != files.begin() + 1; ++it) {
+		std::cout << "load image: " << *it + "_PTEN_Zeiss_4096.jpg" << std::endl;
 		cv::Mat image = cv::imread(imgPath + *it + "_PTEN_Zeiss_4096.jpg", CV_LOAD_IMAGE_COLOR);   // Read the file
 		cv::Mat gray;
 		if (!image.data)                              // Check for invalid input
@@ -182,37 +206,51 @@ int main() {
 
 		std::cout << "# circles: " << circles.size() << std::endl;
 
-		for (size_t i = 0; i < circles.size(); i++)
-		{
-			cv::Point center(cvRound(circles[i][0]), cvRound(circles[i][1]));
-			int radius = cvRound(circles[i][2]);
-			// draw the circle center
-			cv::circle(image, center, 30, cv::Scalar(0, 255, 0), -1, 8, 0);
-			// draw the circle outline
-			cv::circle(image, center, radius, cv::Scalar(0, 0, 255), 3, 8, 0);
-		}
+		int n = std::distance(files.begin(), it);
 
-		std::vector<PointSignal> cep;
-		std::vector<PointSignal> gene;
+		std::vector<PointSignal>& cep = pos[n].cep;
+		std::vector<PointSignal>& gene = pos[n].gene;
 
 		classifyPoints(image, circles, r, svmModel, cep, gene);
 
-		for (std::vector<PointSignal>::iterator it = cep.begin(); it != cep.begin() + 1; ++it)
-			std::cout << "[" << it->x << "," << it->y << "]: " << it->rgb << std::endl;
-		std::cin.ignore();
+		std::cout << "# cep: " << pos[n].cep.size() << std::endl;
+		std::cout << "# gene: " << pos[n].gene.size() << std::endl;
 
-		cv::resize(image, image, cv::Size(1000, 1000));
-		cv::imshow("Display window", image);
-		cv::waitKey(0);
+		if (cep.size() == 0)
+			gRatio.at<float>(n, 0) = 0.0f;
+		else {
+			gRatio.at<float>(n, 0) = static_cast<float>( gene.size() / cep.size() );
+		}
 	}
 
+	// ploting a sample image
+	// int n = 66;
+	int n = 0;
+	cv::Mat image = cv::imread(imgPath + files[n] + "_PTEN_Zeiss_4096.jpg", CV_LOAD_IMAGE_COLOR);   // Read the file
+	std::cout << "# cep: " << pos[n].cep.size() << std::endl;
+	for (size_t i = 0; i < pos[n].cep.size(); i++)
+	{
+		cv::Point center(cvRound(pos[n].cep[i].x), cvRound(pos[n].cep[i].y));
+		int radius = cvRound(10);
+		// draw the circle center
+		//cv::circle(image, center, 30, cv::Scalar(0, 255, 0), -1, 8, 0);
+		// draw the circle outline
+		cv::circle(image, center, radius, pos[n].cep[i].rgb, 3, 8, 0);
+	}
+	std::cout << "# gene: " << pos[n].gene.size() << std::endl;
+	for (size_t i = 0; i < pos[n].gene.size(); i++)
+	{
+		cv::Point center(cvRound(pos[n].gene[i].x), cvRound(pos[n].gene[i].y));
+		int radius = cvRound(10);
+		// draw the circle center
+		//cv::circle(image, center, 30, cv::Scalar(0, 255, 0), -1, 8, 0);
+		// draw the circle outline
+		cv::circle(image, center, radius, pos[n].gene[i].rgb, 3, 8, 0);
+	}
 
-	//svm_free_model_content(svmModel);
-	svm_free_and_destroy_model(&svmModel);
-		
-	//dim = length(imread(strcat(imagepath, files{ 1 }, '.jpg'))); % image size
-
-	std::cin.ignore();
+	cv::resize(image, image, cv::Size(1000, 1000));
+	cv::imshow("Display window", image);
+	cv::waitKey(0);
 }
 
 bool readCsvFile(std::string csvPath, CSVHeader& header, CSVData& data)
