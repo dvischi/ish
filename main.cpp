@@ -87,11 +87,11 @@ struct  PointSignalPositions {
 
 
 std::vector<cv::Scalar> colors = {
-	cv::Scalar(255, 0, 0), // (1, 0, 0)
-	cv::Scalar(0, 0, 0), // (0, 0, 0)
+	cv::Scalar(0, 0, 255),     // (1, 0, 0)
+	cv::Scalar(0, 0, 0),       // (0, 0, 0)
 	cv::Scalar(230, 230, 230), // (0.9f, 0.9f, 0.9f)
-	cv::Scalar(0, 0, 255), // (0, 0, 1)
-	cv::Scalar(64, 224, 208) // (0.2510f, 0.8784f, 0.8157f)
+	cv::Scalar(255, 0, 0),     // (0, 0, 1)
+	cv::Scalar(208, 224, 64)   // (0.2510f, 0.8784f, 0.8157f)
 };
 
 void classifyPoints(
@@ -113,14 +113,27 @@ void classifyPoints(
 			std::cout << "Warning: Index out of bounds: " << rect << std::endl;
 			continue;
 		}
+
+		// convert BGR image to RGB image
+		unsigned char *rdata = (unsigned char*)roi.data;
+		for (int c = 0; c < roi.cols; c++) {
+			for (int r = 0; r < roi.rows; r++) {
+				unsigned char b = rdata[roi.cols * r + c];
+				rdata[roi.cols * r + c] = rdata[roi.cols * r + c + 2];
+				rdata[roi.cols * r + c + 2] = b;
+			}
+		}
 		
 		roi = roi.reshape(1, 1);
 
-		// convert xdata from byte [0, 255] to float [0.0, 1.0]
+		// convert roi from byte [0, 255] to float [0.0, 1.0]
 		roi.convertTo(roi, CV_32FC1);
-		roi /= 255;
+		roi /= 255.0;
 
-		int I = static_cast<int>( svmModel.predict(roi, true) );
+		float fI = svmModel.predict(roi, false);
+		int I = static_cast<int>(fI);
+
+		//std::cout << "I: " << fI << std::endl;
 
 		switch (I)
 		{
@@ -186,12 +199,11 @@ int main() {
 	cv::Mat gRatio(files.size(), 1, CV_32FC1);
 	std::vector<PointSignalPositions> pos(files.size());
 
-	//for (std::vector<std::string>::iterator it = files.begin(); it != files.end(); ++it) {
-	for (std::vector<std::string>::iterator it = files.begin(); it != files.begin() + 1; ++it) {
+	for (std::vector<std::string>::iterator it = files.begin(); it != files.end(); ++it) {
 		std::cout << "load image: " << *it + "_PTEN_Zeiss_4096.jpg" << std::endl;
 		cv::Mat image = cv::imread(imgPath + *it + "_PTEN_Zeiss_4096.jpg", CV_LOAD_IMAGE_COLOR);   // Read the file
 		cv::Mat gray;
-		if (!image.data)                              // Check for invalid input
+		if (!image.data) // Check for invalid input
 		{
 			std::cerr << "Could not read or find image file!" << std::endl;
 			exit(1);
@@ -202,7 +214,7 @@ int main() {
 		GaussianBlur(gray, gray, cv::Size(9, 9), 2, 2);
 
 		std::vector<cv::Vec3f> circles;
-		cv::HoughCircles(gray, circles, CV_HOUGH_GRADIENT, 1.0, r, 25.0, 10.0, r_min, r_max);
+		cv::HoughCircles(gray, circles, CV_HOUGH_GRADIENT, 1.0, r*2, 25.0, 10.0, r_min, r_max);
 
 		std::cout << "# circles: " << circles.size() << std::endl;
 
@@ -219,12 +231,11 @@ int main() {
 		if (cep.size() == 0)
 			gRatio.at<float>(n, 0) = 0.0f;
 		else {
-			gRatio.at<float>(n, 0) = static_cast<float>( gene.size() / cep.size() );
+			gRatio.at<float>(n, 0) = (float)gene.size() / cep.size();
 		}
 	}
 
 	// ploting a sample image
-	// int n = 66;
 	int n = 0;
 	cv::Mat image = cv::imread(imgPath + files[n] + "_PTEN_Zeiss_4096.jpg", CV_LOAD_IMAGE_COLOR);   // Read the file
 	std::cout << "# cep: " << pos[n].cep.size() << std::endl;
